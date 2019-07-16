@@ -26,6 +26,7 @@
 #include <error.h>
 #include <errno.h>
 #include <limits.h>
+#include <linux/netfilter_ipv4.h>
 #include <netinet/ip6.h>
 #include <poll.h>
 #include <sched.h>
@@ -45,6 +46,7 @@
 static socklen_t cfg_addr_len;
 static struct sockaddr *cfg_addr_dst;
 static struct sockaddr *cfg_addr_listen;
+static int cfg_mark;
 static const char *cfg_role;
 static void (*cfg_role_fn)(void);
 
@@ -56,7 +58,7 @@ static struct sockaddr_in cfg_addr4_listen = { .sin_family = AF_INET,
 static struct sockaddr_in6 cfg_addr6_listen = { .sin6_family = AF_INET6,
 						.sin6_addr = IN6ADDR_ANY_INIT };
 
-static int open_active(void)
+static int open_active(bool do_mark)
 {
 	struct timeval tv;
 	int fd;
@@ -69,6 +71,12 @@ static int open_active(void)
 	tv.tv_usec = 300 * 1000;
 	if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)))
 		error(1, errno, "setsockopt sndtimeo");
+
+	if (do_mark) {
+		if (setsockopt(fd, SOL_SOCKET, SO_MARK,
+			       &cfg_mark, sizeof(cfg_mark)))
+			error(1, errno, "setsockopt mark");
+	}
 
 	if (connect(fd, cfg_addr_dst, cfg_addr_len))
 		error(1, errno, "[%s] connect (%d)", cfg_role, errno);
@@ -135,7 +143,7 @@ static void do_client(void)
 {
 	int fd;
 
-	fd = open_active();
+	fd = open_active(false);
 
 	write_msg(fd, 'a');
 	read_msg(fd);
@@ -158,9 +166,46 @@ static void do_server(void)
 		error(1, errno, "[server] close passive");
 }
 
+static void do_intercept_getdstaddr(int fd)
+{
+	int level;
+
+	if (cfg_addr_listen->sa_family == PF_INET)
+		level = SOL_IP;
+	else
+		level = SOL_IPV6;
+
+	if (getsockopt(fd, level, SO_ORIGINAL_DST,
+		       cfg_addr_dst, &cfg_addr_len))
+		error(1, errno, "getsockopt original dst");
+}
+
+static void do_intercept(void)
+{
+	int fd, conn_fd;
+	char msg;
+
+	fd = open_passive();
+	do_intercept_getdstaddr(fd);
+	conn_fd = open_active(true);
+
+	if (1 /* anticipate later sockmap paths */) {
+		msg = read_msg(fd);
+		write_msg(conn_fd, msg + 1);
+
+		msg = read_msg(conn_fd);
+		write_msg(fd, msg + 1);
+	}
+
+	if (close(conn_fd))
+		error(1, errno, "[intercept] close active");
+	if (close(fd))
+		error(1, errno, "[intercept] close passive");
+}
+
 static void __attribute__((noreturn)) usage(const char *filepath)
 {
-	error(1, 0, "Usage: %s [-46] [-d addr] [-D port] [-L port] <client|server> \n",
+	error(1, 0, "Usage: %s [-46] [-d addr] [-D port] [-L port] [-m mark] <client|server|intercept> \n",
 		    filepath);
 
 	/* suppress compiler warning */
@@ -173,7 +218,7 @@ static void parse_opts(int argc, char **argv)
 	const char *addr_dst = NULL;
 	int c;
 
-	while ((c = getopt(argc, argv, "46d:D:L:")) != -1) {
+	while ((c = getopt(argc, argv, "46d:D:L:m:")) != -1) {
 		switch (c) {
 		case '4':
 			if (cfg_addr_dst)
@@ -202,6 +247,11 @@ static void parse_opts(int argc, char **argv)
 			if (port_listen > USHRT_MAX)
 				error(1, 0, "Parse error at listen port");
 			break;
+		case 'm':
+			cfg_mark = strtol(optarg, NULL, 0);
+			if (cfg_mark > UINT32_MAX)
+				error(1, 0, "Parse error at mark");
+			break;
 		default:
 			usage(argv[0]);
 		}
@@ -223,6 +273,10 @@ static void parse_opts(int argc, char **argv)
 		if (!port_listen)
 			usage(argv[0]);
 		cfg_role_fn = do_server;
+	} else if (!strcmp(cfg_role, "intercept")) {
+		if (!port_listen)
+			usage(argv[0]);
+		cfg_role_fn = do_intercept;
 	} else {
 		usage(argv[0]);
 	}

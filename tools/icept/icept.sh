@@ -17,6 +17,8 @@ nsprefix=icept
 ns1="${nsprefix}1"
 ns2="${nsprefix}2"
 
+cfg_mark=1337
+cfg_port_intercept=8000
 cfg_port_server=9000
 
 set -e
@@ -25,6 +27,28 @@ cleanup() {
 	set +e
 
 	kill $(jobs -p) 2>/dev/null
+}
+
+do_intercept() {
+	local -r ns=$1
+	local -r ipt_bin=$2
+	local -r family=$3
+
+	ip netns exec "${ns}" ./icept "-${family}" \
+					-L "${cfg_port_intercept}" \
+					-m "${cfg_mark}" \
+					intercept &
+
+	# Filtering on mark is unsafe, as client can set mark to bypass.
+	# Should use -m owner --uid-owner '!' "${ICEPT_PID}"
+	# But let's not mess with user accounts in this test environment,
+	# so that the test can be run as non-root.
+	for hook in OUTPUT PREROUTING; do
+		ip netns exec "${ns}" \
+			${ipt_bin} -t nat -A "${hook}" -p tcp \
+				   -m mark '!' --mark "${cfg_mark}" \
+				   -j REDIRECT --to-ports "${cfg_port_intercept}"
+	done
 }
 
 do_main() {
@@ -39,6 +63,12 @@ do_main() {
 	ip netns exec "${ns2}" ./icept "-${cfg_family}" \
 					-L "${cfg_port_server}" \
 					server &
+
+	# Start intercept service (optionally)
+	if [[ "${cfg_do_icept}" != "" ]]; then
+		do_intercept "${ns1}" "${ipt_bin}" "${cfg_family}"
+		do_intercept "${ns2}" "${ipt_bin}" "${cfg_family}"
+	fi
 
 	# Wait for servers to be up
 	sleep 0.2
@@ -70,7 +100,11 @@ fi
 trap cleanup EXIT
 
 echo "Test Direct"
-do_main ip6tables 6 "fd::2" false
-do_main iptables 4 "192.168.1.2" false
+do_main ip6tables 6 "fd::2" ""
+do_main iptables 4 "192.168.1.2" ""
+
+echo "Test Intercept (iptables)"
+do_main ip6tables 6 "fd::2" iptables
+do_main iptables 4 "192.168.1.2" iptables
 
 echo "OK. All passed"
