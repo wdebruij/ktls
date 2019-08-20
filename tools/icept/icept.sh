@@ -61,10 +61,13 @@ do_intercept() {
 	local -r ipt_bin=$2
 	local -r family=$3
 	local -r mode=$4
+	local -r cgroup=$5
 
 	# cannot pass extra arg "", so combine with role arg
 	if [[ "${mode}" == "sockmap" ]]; then
 		local -r cfg_role_arg="-s intercept"
+	elif [[ "${mode}" == "skmsg" ]]; then
+		local -r cfg_role_arg="-s intercept -C ${cgroup}"
 	else
 		local -r cfg_role_arg="intercept"
 	fi
@@ -102,8 +105,9 @@ do_main() {
 
 	# Start intercept service (optionally)
 	if [[ "${cfg_do_icept}" != "" ]]; then
-		do_intercept "${ns1}" "${ipt_bin}" "${cfg_family}" "${cfg_do_icept}"
-		do_intercept "${ns2}" "${ipt_bin}" "${cfg_family}" "${cfg_do_icept}"
+		do_intercept "${ns1}" "${ipt_bin}" "${cfg_family}" "${cfg_do_icept}" "${cfg_cgroup_ns1}"
+		sleep 0.2
+		do_intercept "${ns2}" "${ipt_bin}" "${cfg_family}" "${cfg_do_icept}" "${cfg_cgroup_ns2}"
 	fi
 
 	# Wait for servers to be up
@@ -149,5 +153,12 @@ do_main iptables 4 "192.168.1.2" iptables
 echo "Test Intercept (sockmap)"
 do_main ip6tables 6 "fd::2" sockmap
 do_main iptables 4 "192.168.1.2" sockmap
+
+echo "Test Intercept (skmsg)"
+do_main ip6tables 6 "fd::2" skmsg
+cleanup
+set -e
+setup
+do_main iptables 4 "192.168.1.2" skmsg
 
 echo "OK. All passed"

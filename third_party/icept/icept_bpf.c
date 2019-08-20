@@ -33,6 +33,13 @@ struct bpf_map_def SEC("maps") sock_map = {
 	.max_entries = 2,
 };
 
+struct bpf_map_def SEC("maps") sock_map_tx = {
+	.type = BPF_MAP_TYPE_SOCKMAP,
+	.key_size = sizeof(int),
+	.value_size = sizeof(int),
+	.max_entries = 1,
+};
+
 SEC("prog_parser")
 int _prog_parser(struct __sk_buff *skb)
 {
@@ -64,5 +71,38 @@ int _prog_verdict(struct __sk_buff *skb)
 		key = 0;
 
 	return bpf_sk_redirect_map(skb, &sock_map, key, 0);
+}
+
+SEC("prog_cgroup_sockops")
+int _prog_cgroup_sockops(struct bpf_sock_ops *ops)
+{
+	if (ops->op == BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB ||
+	    ops->op == BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB) {
+		uint32_t key = 0;
+
+		bpf_sock_map_update(ops, &sock_map_tx, &key, BPF_NOEXIST);
+	}
+
+	return 1;
+}
+
+SEC("prog_skmsg")
+int _prog_skmsg(struct sk_msg_md *msg)
+{
+	void *data, *data_end;
+	uint32_t key;
+	char *d;
+
+	data = (void *)(long) msg->data;
+	data_end = (void *)(long) msg->data_end;
+	d = data;
+
+	if (data_end < data + 1)
+		return SK_DROP;
+
+	key = d[0] == 'a' ? 1 : 0;
+	d[0]++;
+
+	return bpf_msg_redirect_map(msg, &sock_map, key, 0);
 }
 

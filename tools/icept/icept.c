@@ -25,6 +25,7 @@
 #include <arpa/inet.h>
 #include <error.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <linux/netfilter_ipv4.h>
 #include <linux/tcp.h>
@@ -50,6 +51,7 @@
 static socklen_t cfg_addr_len;
 static struct sockaddr *cfg_addr_dst;
 static struct sockaddr *cfg_addr_listen;
+static const char *cfg_cgroup_path;
 static int cfg_mark;
 static const char *cfg_role;
 static void (*cfg_role_fn)(void);
@@ -233,7 +235,7 @@ static void do_bpf_attach_prog(struct bpf_program *prog, int fd,
 
 static void do_bpf_setup(void)
 {
-	struct bpf_program *prog_parse, *prog_verdict;
+	struct bpf_program *prog_parse, *prog_verdict, *prog_cgroup, *prog_skmsg;
 	struct bpf_map *map;
 
 	obj = bpf_object__open("icept_bpf.o");
@@ -241,6 +243,8 @@ static void do_bpf_setup(void)
 
 	prog_parse = do_bpf_get_prog("prog_parser", BPF_PROG_TYPE_SK_SKB);
 	prog_verdict = do_bpf_get_prog("prog_verdict", BPF_PROG_TYPE_SK_SKB);
+	prog_cgroup = do_bpf_get_prog("prog_cgroup_sockops", BPF_PROG_TYPE_SOCK_OPS);
+	prog_skmsg = do_bpf_get_prog("prog_skmsg", BPF_PROG_TYPE_SK_MSG);
 
 	if (bpf_object__load(obj))
 		error(1, 0, "bpf object load: %ld", libbpf_get_error(obj));
@@ -251,6 +255,25 @@ static void do_bpf_setup(void)
 
 	do_bpf_attach_prog(prog_parse, map_fd, BPF_SK_SKB_STREAM_PARSER);
 	do_bpf_attach_prog(prog_verdict, map_fd, BPF_SK_SKB_STREAM_VERDICT);
+
+	if (cfg_cgroup_path) {
+		int map_tx_fd, cgroup_fd;
+
+		cgroup_fd = open(cfg_cgroup_path, O_DIRECTORY, O_RDONLY);
+		if (cgroup_fd == -1)
+			error(1, errno, "open cgroup");
+
+		do_bpf_attach_prog(prog_cgroup, cgroup_fd, BPF_CGROUP_SOCK_OPS);
+
+		if (close(cgroup_fd))
+			error(1, errno, "close cgroup");
+
+		map = bpf_object__find_map_by_name(obj, "sock_map_tx");
+		bpf_check_ptr(map, "map_tx");
+		map_tx_fd = bpf_map__fd(map);
+
+		do_bpf_attach_prog(prog_skmsg, map_tx_fd, BPF_SK_MSG_VERDICT);
+	}
 }
 
 static void do_bpf_cleanup(void)
@@ -335,7 +358,7 @@ static void do_intercept(void)
 
 static void __attribute__((noreturn)) usage(const char *filepath)
 {
-	error(1, 0, "Usage: %s [-46s] [-d addr] [-D port] [-L port] [-m mark] <client|server|intercept>",
+	error(1, 0, "Usage: %s [-46s] [-C cgroup_path ] [-d addr] [-D port] [-L port] [-m mark] <client|server|intercept>",
 		    filepath);
 
 	/* suppress compiler warning */
@@ -348,7 +371,7 @@ static void parse_opts(int argc, char **argv)
 	const char *addr_dst = NULL;
 	int c;
 
-	while ((c = getopt(argc, argv, "46d:D:L:m:s")) != -1) {
+	while ((c = getopt(argc, argv, "46C:d:D:L:m:s")) != -1) {
 		switch (c) {
 		case '4':
 			if (cfg_addr_dst)
@@ -363,6 +386,9 @@ static void parse_opts(int argc, char **argv)
 			cfg_addr_len = sizeof(struct sockaddr_in6);
 			cfg_addr_dst = (struct sockaddr *)&cfg_addr6_dst;
 			cfg_addr_listen = (struct sockaddr *)&cfg_addr6_listen;
+			break;
+		case 'C':
+			cfg_cgroup_path = optarg;
 			break;
 		case 'd':
 			addr_dst = optarg;
