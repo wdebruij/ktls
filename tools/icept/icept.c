@@ -27,6 +27,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <linux/netfilter_ipv4.h>
+#include <linux/tcp.h>
 #include <netinet/ip6.h>
 #include <poll.h>
 #include <sched.h>
@@ -43,12 +44,16 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <bpf/bpf.h>
+#include <bpf/libbpf.h>
+
 static socklen_t cfg_addr_len;
 static struct sockaddr *cfg_addr_dst;
 static struct sockaddr *cfg_addr_listen;
 static int cfg_mark;
 static const char *cfg_role;
 static void (*cfg_role_fn)(void);
+static bool cfg_sockmap;
 
 static struct sockaddr_in cfg_addr4_dst = { .sin_family = AF_INET };
 static struct sockaddr_in6 cfg_addr6_dst = { .sin6_family = AF_INET6 };
@@ -57,6 +62,9 @@ static struct sockaddr_in cfg_addr4_listen = { .sin_family = AF_INET,
 					       .sin_addr.s_addr = INADDR_ANY };
 static struct sockaddr_in6 cfg_addr6_listen = { .sin6_family = AF_INET6,
 						.sin6_addr = IN6ADDR_ANY_INIT };
+
+int map_fd;
+struct bpf_object *obj;
 
 static int open_active(bool do_mark)
 {
@@ -145,6 +153,9 @@ static void do_client(void)
 
 	fd = open_active(false);
 
+	/* TODO: avoid the need for this */
+	usleep(100 * 1000);
+
 	write_msg(fd, 'a');
 	read_msg(fd);
 
@@ -180,16 +191,132 @@ static void do_intercept_getdstaddr(int fd)
 		error(1, errno, "getsockopt original dst");
 }
 
+static void bpf_check_ptr(const void *obj, const char *name)
+{
+	char err_buf[256];
+	long err;
+
+	if (!obj)
+		error(1, 0, "bpf: %s: NULL ptr\n", name);
+
+	err = libbpf_get_error(obj);
+	if (err) {
+		libbpf_strerror(err, err_buf, sizeof(err_buf));
+		error(1, 0, "bpf: %s: %s\n", name, err_buf);
+	}
+}
+
+static struct bpf_program *do_bpf_get_prog(const char *name,
+					   enum bpf_prog_type type)
+{
+	struct bpf_program *prog;
+
+	prog = bpf_object__find_program_by_title(obj, name);
+	bpf_check_ptr(obj, name);
+	bpf_program__set_type(prog, type);
+
+	return prog;
+}
+
+static void do_bpf_attach_prog(struct bpf_program *prog, int fd,
+			       enum bpf_attach_type type)
+{
+	int prog_fd, ret;
+
+	prog_fd = bpf_program__fd(prog);
+	ret = bpf_prog_attach(prog_fd, fd, type, 0);
+	if (ret)
+		error(1, ret, "bpf attach prog %d", type);
+	if (close(prog_fd))
+		error(1, errno, "bpf close prog %d", type);
+}
+
+static void do_bpf_setup(void)
+{
+	struct bpf_program *prog_parse, *prog_verdict;
+	struct bpf_map *map;
+
+	obj = bpf_object__open("icept_bpf.o");
+	bpf_check_ptr(obj, "obj");
+
+	prog_parse = do_bpf_get_prog("prog_parser", BPF_PROG_TYPE_SK_SKB);
+	prog_verdict = do_bpf_get_prog("prog_verdict", BPF_PROG_TYPE_SK_SKB);
+
+	if (bpf_object__load(obj))
+		error(1, 0, "bpf object load: %ld", libbpf_get_error(obj));
+
+	map = bpf_object__find_map_by_name(obj, "sock_map");
+	bpf_check_ptr(map, "map");
+	map_fd = bpf_map__fd(map);
+
+	do_bpf_attach_prog(prog_parse, map_fd, BPF_SK_SKB_STREAM_PARSER);
+	do_bpf_attach_prog(prog_verdict, map_fd, BPF_SK_SKB_STREAM_VERDICT);
+}
+
+static void do_bpf_cleanup(void)
+{
+	if (close(map_fd))
+		error(1, errno, "close sockmap");
+
+	bpf_object__close(obj);
+}
+
+static void do_intercept_sockmap(int fd, int conn_fd)
+{
+	struct tcp_info tcpi;
+	socklen_t tcpi_len;
+	struct pollfd pfd;
+	uint32_t key, val;
+	int ret;
+
+	key = 0;
+	val = fd;
+	ret = bpf_map_update_elem(map_fd, &key, &val, BPF_ANY);
+	if (ret)
+		error(1, ret, "bpf sockmap insert passive");
+
+	key = 1;
+	val = conn_fd;
+	ret = bpf_map_update_elem(map_fd, &key, &val, BPF_ANY);
+	if (ret)
+		error(1, ret, "bpf sockmap insert active");
+
+	pfd.fd = fd;
+	pfd.events = POLLRDHUP;
+
+	ret = poll(&pfd, 1, 1000);
+	if (ret == -1)
+		error(1, errno, "poll");
+	if (ret == 0)
+		error(1, 0, "poll: timeout");
+
+	tcpi_len = sizeof(tcpi);
+	if (getsockopt(fd, IPPROTO_TCP, TCP_INFO, &tcpi, &tcpi_len))
+		error(1, errno, "getsockopt tcp info");
+	if (tcpi_len != sizeof(tcpi))
+		error(1, 0, "getsockopt tcp info: length");
+
+	fprintf(stderr, "[intercept] sockmap segs in=%d/out=%d bytes in=%lld/out=%lld\n",
+			tcpi.tcpi_data_segs_in, tcpi.tcpi_data_segs_out,
+			tcpi.tcpi_bytes_acked,
+			tcpi.tcpi_bytes_sent - tcpi.tcpi_bytes_retrans);
+}
+
 static void do_intercept(void)
 {
 	int fd, conn_fd;
 	char msg;
 
+	if (cfg_sockmap)
+		do_bpf_setup();
+
 	fd = open_passive();
 	do_intercept_getdstaddr(fd);
 	conn_fd = open_active(true);
 
-	if (1 /* anticipate later sockmap paths */) {
+	if (cfg_sockmap) {
+		do_intercept_sockmap(fd, conn_fd);
+	} else {
 		msg = read_msg(fd);
 		write_msg(conn_fd, msg + 1);
 
@@ -201,11 +328,14 @@ static void do_intercept(void)
 		error(1, errno, "[intercept] close active");
 	if (close(fd))
 		error(1, errno, "[intercept] close passive");
+
+	if (cfg_sockmap)
+		do_bpf_cleanup();
 }
 
 static void __attribute__((noreturn)) usage(const char *filepath)
 {
-	error(1, 0, "Usage: %s [-46] [-d addr] [-D port] [-L port] [-m mark] <client|server|intercept> \n",
+	error(1, 0, "Usage: %s [-46s] [-d addr] [-D port] [-L port] [-m mark] <client|server|intercept>",
 		    filepath);
 
 	/* suppress compiler warning */
@@ -218,7 +348,7 @@ static void parse_opts(int argc, char **argv)
 	const char *addr_dst = NULL;
 	int c;
 
-	while ((c = getopt(argc, argv, "46d:D:L:m:")) != -1) {
+	while ((c = getopt(argc, argv, "46d:D:L:m:s")) != -1) {
 		switch (c) {
 		case '4':
 			if (cfg_addr_dst)
@@ -251,6 +381,9 @@ static void parse_opts(int argc, char **argv)
 			cfg_mark = strtol(optarg, NULL, 0);
 			if (cfg_mark > UINT32_MAX)
 				error(1, 0, "Parse error at mark");
+			break;
+		case 's':
+			cfg_sockmap = true;
 			break;
 		default:
 			usage(argv[0]);
