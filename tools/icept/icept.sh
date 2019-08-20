@@ -17,6 +17,10 @@ nsprefix=icept
 ns1="${nsprefix}1"
 ns2="${nsprefix}2"
 
+cfg_cgroup_root=
+cfg_cgroup_ns1=
+cfg_cgroup_ns2=
+
 cfg_mark=1337
 cfg_port_intercept=8000
 cfg_port_server=9000
@@ -27,6 +31,29 @@ cleanup() {
 	set +e
 
 	kill $(jobs -p) 2>/dev/null
+
+	if [[ -d "${cfg_cgroup_ns2}" ]]; then
+		rmdir "${cfg_cgroup_ns2}"
+		rmdir "${cfg_cgroup_ns1}"
+	fi
+	mountpoint -q "${cfg_cgroup_root}" && umount "${cfg_cgroup_root}"
+	if [[ -d "${cfg_cgroup_root}" ]]; then
+		rmdir "${cfg_cgroup_root}"
+	fi
+}
+
+setup() {
+	cfg_cgroup_root=$(mktemp -d)
+	mount -t cgroup2 none "${cfg_cgroup_root}"
+	cfg_cgroup_ns1="$(mktemp -d ${cfg_cgroup_root}/icept_XXXX_${ns1})"
+	cfg_cgroup_ns2="$(mktemp -d ${cfg_cgroup_root}/icept_XXXX_${ns2})"
+}
+
+in_cgroup() {
+	local -r cgroup=$1
+	shift
+
+	(echo $BASHPID > "${cgroup}/cgroup.procs"; $@)
 }
 
 do_intercept() {
@@ -68,7 +95,8 @@ do_main() {
 	echo -e "\nTest IPv${cfg_family}\n"
 
 	# Start server
-	ip netns exec "${ns2}" ./icept "-${cfg_family}" \
+	in_cgroup "${cfg_cgroup_ns2}" \
+		ip netns exec "${ns2}" ./icept "-${cfg_family}" \
 					-L "${cfg_port_server}" \
 					server &
 
@@ -82,7 +110,8 @@ do_main() {
 	sleep 0.2
 
 	# Start client
-	ip netns exec "${ns1}" ./icept "-${cfg_family}" \
+	in_cgroup "${cfg_cgroup_ns1}" \
+		ip netns exec "${ns1}" ./icept "-${cfg_family}" \
 					-d "${cfg_addr_server}" \
 					-D "${cfg_port_server}" \
 					client
@@ -106,6 +135,8 @@ if [[ "$#" -gt 1 || "$1" != "__subprocess" ]]; then
 fi
 
 trap cleanup EXIT
+
+setup
 
 echo "Test Direct"
 do_main ip6tables 6 "fd::2" ""
