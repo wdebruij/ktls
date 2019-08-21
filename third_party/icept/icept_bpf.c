@@ -43,6 +43,7 @@ struct bpf_map_def SEC("maps") sock_map_tx = {
 SEC("prog_parser")
 int _prog_parser(struct __sk_buff *skb)
 {
+	char debug_msg[] = "[_,_] prog_parser called\n";
 	long headlen = skb->data_end - skb->data;
 	void *data, *data_end;
 	char *d;
@@ -54,15 +55,20 @@ int _prog_parser(struct __sk_buff *skb)
 	data_end = (void *)(long) skb->data_end;
 	d = data;
 
-	if (data_end >= data + 1)
+	if (data_end >= data + 1) {
+		debug_msg[1] = d[0];
 		d[0]++;
+		debug_msg[3] = d[0];
+	}
 
+	bpf_trace_printk(debug_msg, sizeof(debug_msg));
 	return skb->len;
 }
 
 SEC("prog_verdict")
 int _prog_verdict(struct __sk_buff *skb)
 {
+	char debug_msg[] = "[_,_] prog_parser verdict\n";
 	uint32_t key;
 
 	if (skb->local_port == 8000)
@@ -70,6 +76,7 @@ int _prog_verdict(struct __sk_buff *skb)
 	else
 		key = 0;
 
+	bpf_trace_printk(debug_msg, sizeof(debug_msg));
 	return bpf_sk_redirect_map(skb, &sock_map, key, 0);
 }
 
@@ -89,6 +96,7 @@ int _prog_cgroup_sockops(struct bpf_sock_ops *ops)
 SEC("prog_skmsg")
 int _prog_skmsg(struct sk_msg_md *msg)
 {
+	char debug_msg[] = "[_,_] skmsg called\n";
 	void *data, *data_end;
 	uint32_t key;
 	char *d;
@@ -101,8 +109,12 @@ int _prog_skmsg(struct sk_msg_md *msg)
 		return SK_DROP;
 
 	key = d[0] == 'a' ? 1 : 0;
-	d[0]++;
 
+	debug_msg[1] = d[0];
+	d[0]++;
+	debug_msg[3] = d[0];
+
+	bpf_trace_printk(debug_msg, sizeof(debug_msg));
 	return bpf_msg_redirect_map(msg, &sock_map, key, 0);
 }
 
