@@ -13,7 +13,7 @@ icept: icept.o
 
 %_bpf.o: ../../third_party/icept/%_bpf.c
 	$(CLANG) -I ${KSRC}/usr/include \
-		 -I ${KSRC}/tools/testing/selftests/bpf \
+		 -I ${KSRC}/tools/lib/bpf \
 		 -target bpf -O2 -emit-llvm -c $< -o - | \
 		 $(LLC) -march=bpf -mcpu=generic -filetype=obj -o $@
 
