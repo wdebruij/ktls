@@ -7,9 +7,10 @@ LLC=llc-7
 
 all: icept icept_bpf.o
 
-icept: icept.o
-	gcc -static $+ -o $@ \
-	    -L ${KSRC}/tools/lib/bpf -lbpf -lelf -lz
+icept: icept.o icept_tls.o
+	gcc $+ -o $@ \
+	    -Wl,-Bstatic -L ${KSRC}/tools/lib/bpf -lbpf -lelf -lz \
+	    -Wl,-Bdynamic -l:libssl.so.1.0.2 -l:libcrypto.so.1.0.2 -lpthread -ldl
 
 %_bpf.o: ../../third_party/icept/%_bpf.c
 	$(CLANG) -I ${KSRC}/usr/include \

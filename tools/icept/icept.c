@@ -48,9 +48,13 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 
+#include "icept_tls.h"
+
 static socklen_t cfg_addr_len;
 static struct sockaddr *cfg_addr_dst;
 static struct sockaddr *cfg_addr_listen;
+static bool cfg_do_ktls_active;
+static bool cfg_do_ktls_passive;
 static const char *cfg_cgroup_path;
 static int cfg_mark;
 static const char *cfg_role;
@@ -327,15 +331,38 @@ static void do_intercept_sockmap(int fd, int conn_fd)
 
 static void do_intercept(void)
 {
+	SSL_CTX *ctx = NULL;
 	int fd, conn_fd;
+	SSL *ssl;
 	char msg;
+
+	if (cfg_do_ktls_passive || cfg_do_ktls_active) {
+		ctx = setup_tls("test.pem");
+		ssl = SSL_new(ctx);
+		if (!ssl)
+			error_ssl();
+	}
 
 	if (cfg_sockmap)
 		do_bpf_setup();
 
+
 	fd = open_passive();
+	if (cfg_do_ktls_passive) {
+		if (SSL_set_fd(ssl, fd) != 1)
+			error_ssl();
+		if (SSL_accept(ssl) != 1)
+			error_ssl();
+	}
+
 	do_intercept_getdstaddr(fd);
 	conn_fd = open_active(true);
+	if (cfg_do_ktls_active) {
+		if (SSL_set_fd(ssl, fd) != 1)
+			error_ssl();
+		if (SSL_connect(ssl) != 1)
+			error_ssl();
+	}
 
 	if (cfg_sockmap) {
 		do_intercept_sockmap(fd, conn_fd);
@@ -354,6 +381,11 @@ static void do_intercept(void)
 
 	if (cfg_sockmap)
 		do_bpf_cleanup();
+
+	if (ssl) {
+		SSL_free(ssl);
+		SSL_CTX_free(ctx);
+	}
 }
 
 static void __attribute__((noreturn)) usage(const char *filepath)
@@ -371,7 +403,7 @@ static void parse_opts(int argc, char **argv)
 	const char *addr_dst = NULL;
 	int c;
 
-	while ((c = getopt(argc, argv, "46C:d:D:L:m:s")) != -1) {
+	while ((c = getopt(argc, argv, "46C:d:D:kKL:m:s")) != -1) {
 		switch (c) {
 		case '4':
 			if (cfg_addr_dst)
@@ -397,6 +429,12 @@ static void parse_opts(int argc, char **argv)
 			port_dst = strtol(optarg, NULL, 0);
 			if (port_dst > USHRT_MAX)
 				error(1, 0, "Parse error at dest port");
+			break;
+		case 'k':
+			cfg_do_ktls_active = true;
+			break;
+		case 'K':
+			cfg_do_ktls_passive = true;
 			break;
 		case 'L':
 			port_listen = strtol(optarg, NULL, 0);
@@ -454,6 +492,12 @@ static void parse_opts(int argc, char **argv)
 		cfg_addr6_dst.sin6_port = htons(port_dst);
 		cfg_addr6_listen.sin6_port = htons(port_listen);
 	}
+
+	if (cfg_role_fn != do_intercept &&
+	    (cfg_do_ktls_active || cfg_do_ktls_passive))
+		error(1, 0, "kTLS only supported between icept processes");
+	if (cfg_do_ktls_active && cfg_do_ktls_passive)
+		error(1, 0, "kTLS only used between icept, so one FD only");
 }
 
 int main(int argc, char **argv)
