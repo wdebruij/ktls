@@ -95,10 +95,10 @@ static SSL_CTX * setup_tls(void)
 	if (SSL_CTX_set_cipher_list(ctx, "AES128-GCM-SHA256") != 1)
 		error_ssl();
 
-	if (SSL_CTX_use_certificate_file(ctx, "test.pem", SSL_FILETYPE_PEM) != 1)
+	if (SSL_CTX_use_certificate_file(ctx, "cert.pem", SSL_FILETYPE_PEM) != 1)
 		error_ssl();
 
-	if (SSL_CTX_use_PrivateKey_file(ctx, "test.pem", SSL_FILETYPE_PEM) != 1)
+	if (SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM) != 1)
 		error_ssl();
 
 	return ctx;

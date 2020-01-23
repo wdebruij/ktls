@@ -1,7 +1,7 @@
 
 .PHONY: all clean distclean test test_tls test_ktls test_tls_verbose test_ktls_verbose
 
-all: ktls test.pem ktls_static ktls_boringssl
+all: ktls ktls_static ktls_boringssl cert.pem
 
 ktls: ktls.o
 	gcc $+ -o $@ -l:libssl.so.1.0.2 -l:libcrypto.so.1.0.2 -lpthread -ldl
@@ -18,51 +18,53 @@ ktls_boringssl: ktls_boringssl.o boringssl/build/ssl/libssl.a boringssl/build/cr
 %.o: %.c
 	gcc -ggdb -c -Wall -Werror $< -o $@
 
-test.pem:
+key.pem:
+	openssl genrsa -out $@ 4096
+
+cert.pem: key.pem
 	openssl req -nodes -new -x509 \
 		-subj "/CN=localhost/" \
-		-keyout test.key -out test.cert
-	cat test.key test.cert > test.pem
+		-key $< -out $@
 
 test_tls:
 	./ktls &
 	sleep 0.2
-	echo a | socat stdio openssl-connect:localhost:443,pf=ip6,cert=test.pem,cafile=test.cert
+	echo a | socat stdio openssl-connect:localhost:443,pf=ip6,cafile=cert.pem
 
 test_tls_verbose:
 	./ktls &
 	sleep 0.2
-	echo a | openssl s_client -connect localhost:443 -CAfile test.cert
+	echo a | openssl s_client -connect localhost:443 -CAfile cert.pem
 
 test_ktls:
 	./ktls -k &
 	sleep 0.2
-	echo a | socat stdio openssl-connect:localhost:443,pf=ip6,cert=test.pem,cafile=test.cert
+	echo a | socat stdio openssl-connect:localhost:443,pf=ip6,cafile=cert.pem
 
 test_ktls_boringssl:
 	./ktls_boringssl -k &
 	sleep 0.2
-	echo a | socat stdio openssl-connect:localhost:443,pf=ip6,cert=test.pem,cafile=test.cert
+	echo a | socat stdio openssl-connect:localhost:443,pf=ip6,cafile=cert.pem
 
 test_ktls_splice:
 	./ktls -k -s &
 	sleep 0.2
-	echo a | socat stdio openssl-connect:localhost:443,pf=ip6,cert=test.pem,cafile=test.cert
+	echo a | socat stdio openssl-connect:localhost:443,pf=ip6,cafile=cert.pem
 
 test_ktls_verbose:
 	./ktls -k &
 	sleep 0.2
-	echo a | openssl s_client -connect localhost:443 -CAfile test.cert
+	echo a | openssl s_client -connect localhost:443 -CAfile cert.pem
 
 test_ktls_boringssl_verbose:
 	./ktls_boringssl -k &
 	sleep 0.2
-	echo a | openssl s_client -tls1_2 -cipher AES128-GCM-SHA256 -connect localhost:443 -CAfile test.cert
+	echo a | openssl s_client -tls1_2 -cipher AES128-GCM-SHA256 -connect localhost:443 -CAfile cert.pem
 
 test_ktls_splice_verbose:
 	./ktls -k -s &
 	sleep 0.2
-	echo a | openssl s_client -connect localhost:443 -CAfile test.cert
+	echo a | openssl s_client -connect localhost:443 -CAfile cert.pem
 
 test: test_tls test_ktls
 
@@ -82,8 +84,7 @@ boringssl/build/ssl/libssl.a: boringssl/build/Makefile
 boringssl/build/cryto/libcrypto.a: boringssl/build/ssl/libssl.a
 
 clean:
-	-rm -f *.o
-	-rm test.key test.cert test.pem
+	-rm -f *.o *.pem
 	-rm -rf boringssl
 
 distclean: clean
