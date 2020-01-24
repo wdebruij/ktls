@@ -46,6 +46,9 @@
 #include <openssl/aes.h>
 #include <openssl/modes.h>
 
+static const char *cfg_certfile	= "cert.pem";
+static const char *cfg_ciphers	= "AES128-GCM-SHA256";
+static const char *cfg_keyfile	= "key.pem";
 static bool cfg_do_ktls;
 static bool cfg_do_splice;
 
@@ -90,15 +93,13 @@ static SSL_CTX * setup_tls(void)
 	if (!ctx)
 		error_ssl();
 
-	/* TODO: understand why no shared cipher failure in this mode */
-	//if (SSL_CTX_set_cipher_list(ctx, "ECDH-ECDSA-AES128-GCM-SHA256") != 1)
-	if (SSL_CTX_set_cipher_list(ctx, "AES128-GCM-SHA256") != 1)
+	if (SSL_CTX_set_cipher_list(ctx, cfg_ciphers) != 1)
 		error_ssl();
 
-	if (SSL_CTX_use_certificate_file(ctx, "cert.pem", SSL_FILETYPE_PEM) != 1)
+	if (SSL_CTX_use_certificate_file(ctx, cfg_certfile, SSL_FILETYPE_PEM) != 1)
 		error_ssl();
 
-	if (SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM) != 1)
+	if (SSL_CTX_use_PrivateKey_file(ctx, cfg_keyfile, SSL_FILETYPE_PEM) != 1)
 		error_ssl();
 
 	return ctx;
@@ -305,17 +306,26 @@ static void splice_kernel_tls(SSL *ssl, int fd)
 
 static void usage(const char *filepath)
 {
-	error(1, 0, "usage: %s [-k] [-s]\n", filepath);
+	error(1, 0, "usage: %s [-c cipher] [-C certfile] [-k] [-K keyfile] [-s]\n", filepath);
 }
 
 static void parse_opts(int argc, char **argv)
 {
 	int c;
 
-	while ((c = getopt(argc, argv, "ks")) != -1) {
+	while ((c = getopt(argc, argv, "c:C:kK:s")) != -1) {
 		switch (c) {
+		case 'c':
+			cfg_ciphers = optarg;
+			break;
+		case 'C':
+			cfg_certfile = optarg;
+			break;
 		case 'k':
 			cfg_do_ktls = true;
+			break;
+		case 'K':
+			cfg_keyfile = optarg;
 			break;
 		case 's':
 			cfg_do_splice = true;
