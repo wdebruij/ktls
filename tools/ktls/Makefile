@@ -28,42 +28,42 @@ cert.pem: key.pem
 
 test_tls:
 	./ktls &
-	sleep 0.2
+	sleep 0.4
 	echo a | socat stdio openssl-connect:localhost:443,pf=ip6,cafile=cert.pem
 
 test_tls_verbose:
 	./ktls &
-	sleep 0.2
+	sleep 0.4
 	echo a | openssl s_client -connect localhost:443 -CAfile cert.pem
 
 test_ktls:
 	./ktls -k &
-	sleep 0.2
+	sleep 0.4
 	echo a | socat stdio openssl-connect:localhost:443,pf=ip6,cafile=cert.pem
 
 test_ktls_boringssl:
 	./ktls_boringssl -k &
-	sleep 0.2
+	sleep 0.4
 	echo a | socat stdio openssl-connect:localhost:443,pf=ip6,cafile=cert.pem
 
 test_ktls_splice:
 	./ktls -k -s &
-	sleep 0.2
+	sleep 0.4
 	echo a | socat stdio openssl-connect:localhost:443,pf=ip6,cafile=cert.pem
 
 test_ktls_verbose:
 	./ktls -k &
-	sleep 0.2
+	sleep 0.4
 	echo a | openssl s_client -connect localhost:443 -CAfile cert.pem
 
 test_ktls_boringssl_verbose:
 	./ktls_boringssl -k &
-	sleep 0.2
+	sleep 0.4
 	echo a | openssl s_client -tls1_2 -cipher AES128-GCM-SHA256 -connect localhost:443 -CAfile cert.pem
 
 test_ktls_splice_verbose:
 	./ktls -k -s &
-	sleep 0.2
+	sleep 0.4
 	echo a | openssl s_client -connect localhost:443 -CAfile cert.pem
 
 test: test_tls test_ktls
