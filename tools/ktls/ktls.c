@@ -122,11 +122,23 @@ static void readwrite_tls(SSL *ssl)
 
 #ifdef OPENSSL_IS_BORINGSSL
 
+/* BoringSSL SSL_generate_key_block generates a concatenation of
+ * digest + encryption secrets and optional IV.
+ *
+ * The exact layout is cipher specific. GCM does not have independent
+ * digest secrets, for instance.
+ *
+ * Note: fields follow a client/server layout, as described in RFC 5246 6.3
+ *       this does NOT map 1:1 onto kTLS TLS_TX/TLS_RX.
+ *
+ *       on the server (SSL_accept), map key_server onto TLS_TX
+ *       on the client (SSL_connect), do the opposite
+ */
 struct boringssl_aesgcm128_keyblock {
-	unsigned char key_rx[TLS_CIPHER_AES_GCM_128_KEY_SIZE];
-	unsigned char key_tx[TLS_CIPHER_AES_GCM_128_KEY_SIZE];
-	unsigned char salt_rx[TLS_CIPHER_AES_GCM_128_SALT_SIZE];
-	unsigned char salt_tx[TLS_CIPHER_AES_GCM_128_SALT_SIZE];
+	unsigned char key_client[TLS_CIPHER_AES_GCM_128_KEY_SIZE];
+	unsigned char key_server[TLS_CIPHER_AES_GCM_128_KEY_SIZE];
+	unsigned char salt_client[TLS_CIPHER_AES_GCM_128_SALT_SIZE];
+	unsigned char salt_server[TLS_CIPHER_AES_GCM_128_SALT_SIZE];
 } __attribute__((packed));
 
 static void setup_kernel_tls(SSL *ssl, int fd, bool is_tx)
@@ -152,13 +164,13 @@ static void setup_kernel_tls(SSL *ssl, int fd, bool is_tx)
 
 	if (is_tx) {
 		seq = SSL_get_write_sequence(ssl);
-		key = kb.key_tx;
-		salt = kb.salt_tx;
+		key = kb.key_server;
+		salt = kb.salt_server;
 		optname = TLS_TX;
 	} else {
 		seq = SSL_get_read_sequence(ssl);
-		key = kb.key_rx;
-		salt = kb.salt_rx;
+		key = kb.key_client;
+		salt = kb.salt_client;
 		optname = TLS_RX;
 	}
 
